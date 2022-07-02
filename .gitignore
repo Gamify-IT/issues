@@ -1,2 +1,5 @@
 venv/
 github-pat.txt
+credentials.json
+token.json
+sheet-id.txt
