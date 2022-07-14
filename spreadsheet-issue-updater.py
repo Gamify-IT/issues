@@ -21,10 +21,10 @@ github_api_url = "https://api.github.com/";
 repo_issues_url = "repos/Gamify-IT/issues/issues?state=all&per_page=100&page=" # page is left empty and filled during the request
 
 google_oauth_scopes = ['https://www.googleapis.com/auth/spreadsheets']
-google_sheets_updateable_range = "Issues!A2:C"
+google_sheets_updateable_range = "Issues!A2:F"
 
 # Reads the content of a file and ensures that leading and trailing whitespace will be stripped
-def readFileContent(filename):
+def readFileContent(filename: str):
     try:
         with open(filename) as file:
             return file.read().strip()
@@ -33,6 +33,12 @@ def readFileContent(filename):
         exit(-1)
 
 google_sheet_id = readFileContent('sheet-id.txt')
+
+# Converts a timestamp returned from the GitHub API to a date format useful for Google Docs (YYYY-mm-dd)
+def convertGitHubTimestampToGoogleDate(api_timestamp: str) -> str:
+    if api_timestamp is None:
+        return None
+    return datetime.fromisoformat(api_timestamp.replace('Z', '')).strftime('%Y-%m-%d')
 
 # Attaches auth headers and returns results of a GET request
 def github_api_request(uri_path : str, timeout=10, api_token="") -> requests.Response:
@@ -43,7 +49,7 @@ def github_api_request(uri_path : str, timeout=10, api_token="") -> requests.Res
     return requests.get((github_api_url + uri_path), headers=headers, timeout=timeout)
 
 # Calculates for a given GitHub issue how many storypoints it has
-def storypoints_of_issue(issue) -> int:
+def storypoints_of(issue) -> int:
     label: str
     for label in issue.get('labels'):
         match = re.search(r"^\s*storypoint/(\d+)\s*$", label.get('name'))
@@ -51,6 +57,33 @@ def storypoints_of_issue(issue) -> int:
             return match.group(1)
 
     return None
+
+matches_dod_completely = 'komplett'
+matches_dod_partly = 'teilweise'
+matches_dod_not_at_all = 'gar nicht'
+
+# Checks for a given GitHub issue if it fulfills its dod
+def fulfills_dod(issue) -> str:
+    body = issue.get('body')
+    if body is None:
+        return matches_dod_completely
+    openTasks = len(re.findall(r'^\s*- \[ \]\s*', body, flags=re.MULTILINE))
+    closedTasks = len(re.findall(r'^\s*- \[x\]\s*', body, flags=re.MULTILINE))
+    #print(body, openTasks, closedTasks)
+    if openTasks == 0:
+        return matches_dod_completely
+    elif closedTasks > 0: # Some are open, some closed
+        return matches_dod_partly
+    else:
+        return matches_dod_not_at_all
+
+# Checks for a given GitHub issue whether it is labeled as a bug
+def is_bug(issue) -> bool:
+    for label in issue.get('labels'):
+        match = re.search(r"^\s*bug\s*$", label.get('name'))
+        if match is not None:
+            return True
+    return False
 
 # Returns all currently known GitHub issues as a list of objects
 def query_github_issues() -> list:
@@ -66,7 +99,7 @@ def query_github_issues() -> list:
     while True:
         response = github_api_request(repo_issues_url + str(page), 10, api_token=pat)
 
-        # Response is an empty array -> there are no more issues to query
+        # Response is an empty array -> there are no more issues to query (There is no other way to get the total number of issues in a repo)
         if len(response.json()) < 1:
             break
 
@@ -79,7 +112,14 @@ def query_github_issues() -> list:
         currentIssues: list = response.json()
         page += 1
         for issue in currentIssues:
-            issues.append({'number': int(issue.get('number')), 'closed_at': datetime.fromisoformat(issue.get('closed_at').replace('Z', '')).strftime('%Y-%m-%d') if issue.get('closed_at') is not None else None, 'storypoints': storypoints_of_issue(issue)})
+            issues.append({
+                'number': int(issue.get('number')),
+                'created_at': convertGitHubTimestampToGoogleDate(issue.get('created_at')),
+                'closed_at': convertGitHubTimestampToGoogleDate(issue.get('closed_at')),
+                'storypoints': storypoints_of(issue),
+                'is_bug': is_bug(issue),
+                'dod_fulfilled': fulfills_dod(issue),
+                })
 
     return issues
 
@@ -108,7 +148,19 @@ def get_oauth_token():
 def update_google_spreadsheets(issues):
 
     # Build the body of the request
-    request_body = { "range": google_sheets_updateable_range, "majorDimension": "ROWS", "values": [ [issue.get('number'), issue.get('storypoints'), issue.get('closed_at')] for issue in issues] }
+    request_body = {
+            "range": google_sheets_updateable_range,
+            "majorDimension": "ROWS",
+            "values": [
+                [   issue.get('number'),
+                    issue.get('storypoints'),
+                    issue.get('created_at'),
+                    issue.get('closed_at'),
+                    issue.get('is_bug'),
+                    issue.get('dod_fulfilled')
+                    ] for issue in issues
+                ]
+            }
 
     # Execute the update
     try:
@@ -126,6 +178,6 @@ def update_google_spreadsheets(issues):
 issues = sorted(query_github_issues(), key=lambda issue: issue.get('number'))
 print(json.dumps(issues, indent=4))
 update_google_spreadsheets(issues)
-print("Successfully updated the Google Docs Sheet")
+print(f"Successfully updated the Google Docs Sheet at {datetime.now()}")
 
 
