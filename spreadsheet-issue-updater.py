@@ -34,11 +34,17 @@ def readFileContent(filename: str):
 
 google_sheet_id = readFileContent('sheet-id.txt')
 
+# Converts the given datetime into a string that is intended for humans, not computers
+def to_human_date(instant: datetime) -> str:
+    return instant.strftime('%d.%m.%Y, %H:%M:%S')
+
 # Converts a timestamp returned from the GitHub API to a date format useful for Google Docs (YYYY-mm-dd)
 def convertGitHubTimestampToGoogleDate(api_timestamp: str) -> str:
     if api_timestamp is None:
         return None
     return datetime.fromisoformat(api_timestamp.replace('Z', '')).strftime('%Y-%m-%d')
+
+latest_github_api_response: str = ""
 
 # Attaches auth headers and returns results of a GET request
 def github_api_request(uri_path : str, timeout=10, api_token="") -> requests.Response:
@@ -46,7 +52,10 @@ def github_api_request(uri_path : str, timeout=10, api_token="") -> requests.Res
     headers['Accept'] = 'application/vnd.github.v3+json'
     if api_token is not None and api_token != "":
         headers['Authorization'] = 'token ' + api_token
-    return requests.get((github_api_url + uri_path), headers=headers, timeout=timeout)
+    response = requests.get((github_api_url + uri_path), headers=headers, timeout=timeout)
+    global latest_github_api_response
+    latest_github_api_response = f"{response.headers.get('x-ratelimit-remaining')} requests to the GitHub API remain. Resetting at {to_human_date(datetime.fromtimestamp(int(response.headers.get('x-ratelimit-reset'))))}"
+    return response
 
 # Calculates for a given GitHub issue how many storypoints it has
 def storypoints_of(issue) -> int:
@@ -106,7 +115,7 @@ def query_github_issues() -> list:
         # Sleep until the rate limit has been reset
         if int(response.headers.get('x-ratelimit-remaining', 2)) <= 1:
             resetTime = datetime.fromtimestamp(response.headers.get('x-ratelimit-reset'))
-            print("Sleeping until " + resetTime.strftime("%d.%m%Y, %H:%M:%S"))
+            print("Sleeping until " + to_human_date(resetTime))
             time.sleep((resetTime - datetime.utcnow()).total_seconds())
 
         currentIssues: list = response.json()
@@ -178,6 +187,7 @@ def update_google_spreadsheets(issues):
 issues = sorted(query_github_issues(), key=lambda issue: issue.get('number'))
 print(json.dumps(issues, indent=4))
 update_google_spreadsheets(issues)
-print(f"Successfully updated the Google Docs Sheet at {datetime.now()}")
+print(latest_github_api_response)
+print(f"Successfully updated the Google Docs Sheet at {to_human_date(datetime.now())}")
 
 
