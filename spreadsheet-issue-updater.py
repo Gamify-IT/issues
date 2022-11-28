@@ -1,3 +1,4 @@
+from typing import Union, TypeVar
 from datetime import datetime
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -23,28 +24,68 @@ repo_issues_url = "repos/Gamify-IT/issues/issues?state=all&per_page=100&page=" #
 google_oauth_scopes = ['https://www.googleapis.com/auth/spreadsheets']
 google_sheets_updateable_range = "Issues!A2:F"
 
-# Reads the content of a file and ensures that leading and trailing whitespace will be stripped
-def readFileContent(filename: str):
+def readFileContent(filename: str, ignore_missing:bool=False) -> str:
+    """
+    Reads the content of a file and ensures that leading and trailing whitespace will be stripped.
+    If ignore_missing and the file is not present, "" will be returned
+    """
     try:
         with open(filename) as file:
             return file.read().strip()
-    except Error as error:
-        print(f"Cannot open/find {filename}.\nError: {error}\nExiting...")
-        exit(-1)
+    except FileNotFoundError as error:
+        if not ignore_missing:
+            print(f"Cannot open/find {filename}.\nError: {error}\nExiting...")
+            exit(-1)
+        else:
+            return ""
+
+def convertIsoTimestamp(timestamp: Union[str, datetime]) -> datetime:
+    """
+    Converts a timestamp in iso format ('2022-06-31T23:59:00Z') to a datetime
+    """
+    if isinstance(timestamp, datetime): # No-op if we already converted the datetime
+        return timestamp
+    if timestamp is None:
+        return None
+    return datetime.fromisoformat(timestamp.replace('Z', ''))
 
 google_sheet_id = readFileContent('sheet-id.txt')
+
+raw_start_date = readFileContent('project-start-iso.txt')
+project_start_date = datetime.min if raw_start_date == "" else convertIsoTimestamp(raw_start_date)
+
+T = TypeVar("T")
+def get_or_default(dictionary: dict, key: str, default: T) -> T:
+    # There are two cases: 1. entry not in the dict, 2. entry in the dict is None
+    result = dictionary.get(key, default)
+    return default if result is None else result
+
 
 # Converts the given datetime into a string that is intended for humans, not computers
 def to_human_date(instant: datetime) -> str:
     return instant.strftime('%d.%m.%Y, %H:%M:%S')
 
-# Converts a timestamp returned from the GitHub API to a date format useful for Google Docs (YYYY-mm-dd)
+# Converts a timestamp returned from the GitHub API (format '2022-06-31T23:59:00Z') to a date format useful for Google Docs (YYYY-mm-dd)
 def convertGitHubTimestampToGoogleDate(api_timestamp: str) -> str:
-    if api_timestamp is None:
-        return None
-    return datetime.fromisoformat(api_timestamp.replace('Z', '')).strftime('%Y-%m-%d')
+    instant = convertIsoTimestamp(api_timestamp)
+    return None if instant is None else instant.strftime('%Y-%m-%d')
 
 latest_github_api_response: str = ""
+
+def is_issue_for_this_project(issue: dict) -> bool:
+    """
+    Filters out issues that do not belong to the current project.
+    If this method returns true, the issue belongs to the current project
+    """
+    if project_start_date is None:
+        return True # The current project was started with issue 1, so all issues are valid
+    if convertIsoTimestamp(get_or_default(issue,'created_at', datetime.min)) >= project_start_date:
+        return True
+    if convertIsoTimestamp(get_or_default(issue,'updated_at', datetime.min)) >= project_start_date:
+        return True
+    if convertIsoTimestamp(get_or_default(issue,'closed_at', datetime.min)) >= project_start_date:
+        return True
+    return False
 
 # Attaches auth headers and returns results of a GET request
 def github_api_request(uri_path : str, timeout=10, api_token="") -> requests.Response:
@@ -121,14 +162,15 @@ def query_github_issues() -> list:
         currentIssues: list = response.json()
         page += 1
         for issue in currentIssues:
-            issues.append({
-                'number': int(issue.get('number')),
-                'created_at': convertGitHubTimestampToGoogleDate(issue.get('created_at')),
-                'closed_at': convertGitHubTimestampToGoogleDate(issue.get('closed_at')),
-                'storypoints': storypoints_of(issue),
-                'is_bug': is_bug(issue),
-                'dod_fulfilled': fulfills_dod(issue),
-                })
+            if is_issue_for_this_project(issue):
+                issues.append({
+                    'number': int(issue.get('number')),
+                    'created_at': convertGitHubTimestampToGoogleDate(issue.get('created_at')),
+                    'closed_at': convertGitHubTimestampToGoogleDate(issue.get('closed_at')),
+                    'storypoints': storypoints_of(issue),
+                    'is_bug': is_bug(issue),
+                    'dod_fulfilled': fulfills_dod(issue),
+                    })
 
     return issues
 
